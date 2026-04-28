@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2026 Contributors to the Eclipse Foundation.
  * Copyright (c) 2012, 2018 Oracle and/or its affiliates. All rights reserved.
  *
  * This program and the accompanying materials are made available under the
@@ -24,6 +25,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintStream;
 import java.io.PrintWriter;
 import java.net.URI;
 import java.nio.file.FileSystem;
@@ -48,16 +50,17 @@ import java.util.zip.ZipOutputStream;
 
 import org.glassfish.hk2.utilities.DescriptorImpl;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 /**
  * @author jwells
- *
  */
 public class GeneratorRunner {
     private final static String DOT_CLASS = ".class";
     private final static String META_INF = "META-INF";
     private final static String INHABITANTS = "hk2-locator";
     private final static String TARGET_HABITATS = "target-habitats";  //Should be same as ConfigMetadata.TARGET_HABITATS
-    
+
     private final Utilities utilities;  // For caching
     private final String fileOrDirectory;
     private final String outjarName;
@@ -70,7 +73,7 @@ public class GeneratorRunner {
 
     /**
      * This initializes the GeneratorRunner with the values needed to run
-     * 
+     *
      * @param fileOrDirectory The fileOrDirectory to inspect for services
      * @param outjarName The name of the jar file to create (can be the fileOrDirectory)
      * @param locatorName The name of the locator these files should be put into
@@ -98,39 +101,41 @@ public class GeneratorRunner {
         utilities = new Utilities(verbose, searchPath);
         this.includeDate = includeDate;
         outJarIsInJar = fileOrDirectory.equals(outjarName);
-        
+
         if (verbose) {
             System.out.println("HabitatGenerator: inputFile=" + fileOrDirectory + " outjarName=" + outjarName +
                     " locatorName=" + locatorName + " noSwap=" + noSwap + " outputDirectory=" + outputDirectory);
         }
     }
-    
+
     /**
      * Does the work of writing out the inhabitants file to the proper location
-     * 
+     *
      * @throws AssertionError On an error such as not being able to find the
      * proper file
      * @throws IOException On IO error
      */
     public void go() throws AssertionError, IOException {
         File toInspect = new File(fileOrDirectory);
-        
+
         if (!toInspect.exists()) {
             throw new AssertionError("Could not find file: " + toInspect.getAbsolutePath());
         }
-        
+
         List<DescriptorImpl> allDescriptors;
         if (toInspect.isDirectory()) {
             allDescriptors = utilities.findAllServicesFromDirectory(toInspect, Collections.singletonList(toInspect));
-            if (allDescriptors.isEmpty()) return;
+            if (allDescriptors.isEmpty()) {
+                return;
+            }
             writeToDirectory(allDescriptors);
         }
         else {
             allDescriptors = findAllServicesFromJar(toInspect);
-            
+
             // Do this here to close all FDs so that on Windows we can rewrite the file
             utilities.close();
-            
+
             if (noSwap && outJarIsInJar) {
                 writeToJarNoSwap(toInspect, allDescriptors);
             }
@@ -138,10 +143,10 @@ public class GeneratorRunner {
                 writeToJar(toInspect, allDescriptors);
             }
         }
-        
+
         utilities.close();
     }
-    
+
     private void writeToDirectory(List<DescriptorImpl> allDescriptors) throws IOException {
         Map<String, List<DescriptorImpl>> targetHabitatMap = new HashMap<String, List<DescriptorImpl>>();
         targetHabitatMap.put(locatorName, new ArrayList<DescriptorImpl>());
@@ -168,11 +173,11 @@ public class GeneratorRunner {
         for (Map.Entry<String, List<DescriptorImpl>> targetHabitatEntry : targetHabitatMap.entrySet()) {
             String targetHabitatName = targetHabitatEntry.getKey();
             List<DescriptorImpl> descriptors = targetHabitatEntry.getValue();
-            
+
             if (descriptors.size() == 0) {
                 continue;
             }
-            
+
             File inhabitantsDir = new File(outputDirectory);
             File outputFile = new File(inhabitantsDir, targetHabitatName);
 
@@ -220,161 +225,118 @@ public class GeneratorRunner {
 
         }
     }
-    
+
     private void writeToJar(File jarFile, List<DescriptorImpl> descriptors) throws IOException {
         File outjar = new File(outjarName);
         File writeMeFile = writeInhabitantsFile(descriptors, null, outjar.getParentFile());
         writeMeFile.deleteOnExit();
-        
-        byte buffer[] = new byte[1024];
-        
+
+        byte[] buffer = new byte[8192];
         File tmpJarFile = File.createTempFile(jarFile.getName(), ".tmp", outjar.getParentFile());
-        
-        FileInputStream fis = new FileInputStream(jarFile);
-        ZipInputStream zis = new ZipInputStream(fis);
-        
-        FileOutputStream fos = null;
-        ZipOutputStream zos = null;
-        
-        try {
-            fos = new FileOutputStream(tmpJarFile);
-            zos = new ZipOutputStream(fos);
-        
+        try (FileInputStream fis = new FileInputStream(jarFile);
+            ZipInputStream zis = new ZipInputStream(fis);
+            FileOutputStream fos = new FileOutputStream(tmpJarFile);
+            ZipOutputStream zos = new ZipOutputStream(fos)) {
+
             ZipEntry zentry = zis.getNextEntry();
             while (zentry != null) {
                 String entryName = zentry.getName();
-            
+
                 if (entryName.equals(META_INF + "/" + INHABITANTS + "/" + locatorName)) {
                     // Don't write out the old one
                     zentry = zis.getNextEntry();
                     continue;
                 }
-            
+
                 zos.putNextEntry(new ZipEntry(entryName));
-            
+
                 int len;
                 while ((len = zis.read(buffer)) > 0) {
                     zos.write(buffer, 0, len);
                 }
-            
+
                 zentry = zis.getNextEntry();
             }
-        
+
             if (!descriptors.isEmpty()) {
                 zos.putNextEntry(new ZipEntry(META_INF + "/" + INHABITANTS + "/" + locatorName));
-        
-                FileInputStream desc_os = new FileInputStream(writeMeFile);
-                try {
+
+                try (FileInputStream desc_os = new FileInputStream(writeMeFile)) {
                     int len;
                     while ((len = desc_os.read(buffer)) > 0) {
                         zos.write(buffer, 0, len);
                     }
                 }
-                finally {
-                    desc_os.close();
-                }
             }
         }
-        finally {
-            zis.close();
-            
-            if (zos != null) {
-                zos.close();
-            }
-        }
-        
+
         // All went well, replace the JAR file with the new and improved jar file
         String tmpFileName = tmpJarFile.getAbsolutePath();
-        
+
         if (verbose) {
             System.out.println("Swapping jar file " + tmpFileName + " to " + outjar.getAbsolutePath());
         }
-        
+
         if (!tmpJarFile.renameTo(outjar)) {
             throw new IOException("Unable to swap generated JAR file " + tmpFileName + " to " + outjar.getAbsolutePath());
         }
     }
-    
+
     private void writeToJarNoSwap(File jarFile, List<DescriptorImpl> descriptors) throws IOException {
-        if (descriptors.isEmpty()) return;
-        
-        URI jarURI = URI.create("jar:" + jarFile.toURI());
-        
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        PrintWriter bWriter = new PrintWriter(baos);
-        writeHeader(bWriter);
-        
-        for (DescriptorImpl desc : descriptors) {
-            desc.writeObject(bWriter);
+        if (descriptors.isEmpty()) {
+            return;
         }
-        
-        bWriter.close();
-        baos.close();
-        
-        byte data[] = baos.toByteArray();
-        
-        OutputStream os = null;
-        PrintWriter writer = null;
-        ByteArrayInputStream bais = null;
-        
-        FileSystem fileSystem = FileSystems.newFileSystem(jarURI, new HashMap<String, Object>());
-        try {
+
+        final URI jarURI = URI.create("jar:" + jarFile.toURI());
+        final byte[] data = toByteArray(descriptors);
+        try (FileSystem fileSystem = FileSystems.newFileSystem(jarURI, new HashMap<>())) {
             Path locatorDirectory = fileSystem.getPath("/" + META_INF, INHABITANTS);
             Files.createDirectories(locatorDirectory);
-        
             Path locatorPath = fileSystem.getPath("/" + META_INF, INHABITANTS, locatorName);
-            
-            bais = new ByteArrayInputStream(data);
-            
-            Files.copy(bais, locatorPath, StandardCopyOption.REPLACE_EXISTING);
-        }
-        finally {
-            if (bais != null) {
-                bais.close();
+            try (ByteArrayInputStream bais = new ByteArrayInputStream(data)) {
+                Files.copy(bais, locatorPath, StandardCopyOption.REPLACE_EXISTING);
             }
-            if (writer != null) {
-                writer.close();
-            }
-            if (os != null) {
-                os.close();
-            }
-            
-            fileSystem.close();
         }
     }
-    
+
+    private byte[] toByteArray(List<DescriptorImpl> descriptors) throws IOException {
+        final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        try (PrintWriter bWriter = new PrintWriter(baos, false, UTF_8)) {
+            writeHeader(bWriter);
+            for (DescriptorImpl desc : descriptors) {
+                desc.writeObject(bWriter);
+            }
+        }
+        return baos.toByteArray();
+    }
+
     private File writeInhabitantsFile(List<DescriptorImpl> descriptors, File noSwapFile, File outDir) throws IOException {
-        File outFile;
+        final File outFile;
         if (noSwapFile != null) {
             outFile = noSwapFile;
-        }
-        else {
+        } else {
             outFile = File.createTempFile(locatorName, ".tmp", outDir);
         }
-        
+
         if (verbose) {
             System.out.println("Writing " + descriptors.size() + " entries to file " + outFile.getAbsolutePath());
         }
-        
-        FileOutputStream fos = new FileOutputStream(outFile);
-        
-        PrintWriter pw = new PrintWriter(fos);
-        writeHeader(pw);
-        
-        for (DescriptorImpl di : descriptors) {
-            di.writeObject(pw);
+
+        try (OutputStream outputStream = new PrintStream(outFile, UTF_8);
+            PrintWriter pw = new PrintWriter(outputStream)) {
+            writeHeader(pw);
+            for (DescriptorImpl di : descriptors) {
+                di.writeObject(pw);
+            }
         }
-        
-        pw.close();
-        fos.close();
-        
+
         if (verbose) {
             System.out.println("Wrote " + descriptors.size() + " entries to inhabitant file " + outFile.getAbsolutePath());
         }
-        
+
         return outFile;
     }
-    
+
     private void writeHeader(PrintWriter writer) {
         writer.println("#");
         if (includeDate) {
@@ -385,26 +347,28 @@ public class GeneratorRunner {
         }
         writer.println("#");
         writer.println();
-        
+
     }
-    
+
     private List<DescriptorImpl> findAllServicesFromJar(File jar) throws IOException {
         TreeSet<DescriptorImpl> retVal = new TreeSet<DescriptorImpl>(new DescriptorComparitor());
-        
+
         JarFile jarFile = new JarFile(jar);
-        
+
         try {
             Enumeration<JarEntry> entries = jarFile.entries();
             while (entries.hasMoreElements()) {
                 JarEntry entry = entries.nextElement();
-                
+
                 String entryName = entry.getName();
-                if (!entryName.endsWith(DOT_CLASS)) continue;
-                
+                if (!entryName.endsWith(DOT_CLASS)) {
+                    continue;
+                }
+
                 InputStream is = null;
                 try {
                     is = jarFile.getInputStream(entry);
-                    
+
                     List<DescriptorImpl> dis = utilities.createDescriptorIfService(is, Collections.singletonList(jar));
                     retVal.addAll(dis);
                 }
@@ -418,13 +382,13 @@ public class GeneratorRunner {
                         }
                     }
                 }
-                
+
             }
         }
         finally {
             jarFile.close();
         }
-        
+
         return new ArrayList<DescriptorImpl>(retVal);
     }
 }
