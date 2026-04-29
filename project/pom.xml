@@ -31,7 +31,7 @@
 
     <groupId>org.glassfish.hk2</groupId>
     <artifactId>hk2-project</artifactId>
-    <version>4.0.1-SNAPSHOT</version>
+    <version>4.0.2-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>GlassFish HK2 Project POM</name>
@@ -118,7 +118,7 @@
     </contributors>
 
     <properties>
-        <project.build.outputTimestamp>2026-03-24T16:44:27Z</project.build.outputTimestamp>
+        <project.build.outputTimestamp>2026-04-28T21:36:23Z</project.build.outputTimestamp>
     </properties>
 
     <profiles>
